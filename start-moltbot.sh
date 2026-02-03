@@ -1,5 +1,6 @@
 #!/bin/bash
 # Startup script for Moltbot in Cloudflare Sandbox
+# Cache bust: 2026-02-03-rebuild-v11-baseurl-fix
 # This script:
 # 1. Restores config from R2 backup if available
 # 2. Configures moltbot from environment variables
@@ -163,6 +164,12 @@ if (config.models?.providers?.anthropic?.models) {
     }
 }
 
+// Clean up invalid 'dm' key from telegram config (should be 'dmPolicy')
+if (config.channels?.telegram?.dm !== undefined) {
+    console.log('Removing invalid dm key from telegram config');
+    delete config.channels.telegram.dm;
+}
+
 
 
 // Gateway configuration
@@ -187,8 +194,13 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     config.channels.telegram = config.channels.telegram || {};
     config.channels.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN;
     config.channels.telegram.enabled = true;
-    config.channels.telegram.dm = config.channels.telegram.dm || {};
-    config.channels.telegram.dmPolicy = process.env.TELEGRAM_DM_POLICY || 'pairing';
+    // Use 'open' policy in dev mode to bypass pairing, otherwise use configured policy
+    if (process.env.CLAWDBOT_DEV_MODE === 'true') {
+        config.channels.telegram.dmPolicy = 'open';
+        config.channels.telegram.allowFrom = ['*'];
+    } else {
+        config.channels.telegram.dmPolicy = process.env.TELEGRAM_DM_POLICY || 'pairing';
+    }
 }
 
 // Discord configuration
@@ -259,10 +271,36 @@ if (isOpenAI) {
     config.agents.defaults.models['anthropic/claude-opus-4-5-20251101'] = { alias: 'Opus 4.5' };
     config.agents.defaults.models['anthropic/claude-sonnet-4-5-20250929'] = { alias: 'Sonnet 4.5' };
     config.agents.defaults.models['anthropic/claude-haiku-4-5-20251001'] = { alias: 'Haiku 4.5' };
-    config.agents.defaults.model.primary = 'anthropic/claude-opus-4-5-20251101';
+    config.agents.defaults.model.primary = 'anthropic/claude-sonnet-4-5-20250929';
 } else {
-    // Default to Anthropic without custom base URL (uses built-in pi-ai catalog)
-    config.agents.defaults.model.primary = 'anthropic/claude-opus-4-5';
+    // Default to Anthropic direct API - must define provider explicitly
+    // because moltbot's built-in catalog doesn't include newer models
+    console.log('Configuring Anthropic provider for direct API access');
+    config.models = config.models || {};
+    config.models.providers = config.models.providers || {};
+    const providerConfig = {
+        baseUrl: 'https://api.anthropic.com',
+        api: 'anthropic-messages',
+        models: [
+            { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', contextWindow: 200000 },
+            { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', contextWindow: 200000 },
+            { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', contextWindow: 200000 },
+            { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', contextWindow: 200000 },
+        ]
+    };
+    // Include API key in provider config if set
+    if (process.env.ANTHROPIC_API_KEY) {
+        providerConfig.apiKey = process.env.ANTHROPIC_API_KEY;
+    }
+    config.models.providers.anthropic = providerConfig;
+    // Add models to the allowlist so they appear in /models
+    config.agents.defaults.models = config.agents.defaults.models || {};
+    config.agents.defaults.models['anthropic/claude-opus-4-5-20251101'] = { alias: 'Opus 4.5' };
+    config.agents.defaults.models['anthropic/claude-sonnet-4-5-20250929'] = { alias: 'Sonnet 4.5' };
+    config.agents.defaults.models['anthropic/claude-sonnet-4-20250514'] = { alias: 'Sonnet 4' };
+    config.agents.defaults.models['anthropic/claude-haiku-4-5-20251001'] = { alias: 'Haiku 4.5' };
+    // Use Sonnet 4.5 as default (latest)
+    config.agents.defaults.model.primary = 'anthropic/claude-sonnet-4-5-20250929';
 }
 
 // Write updated config
