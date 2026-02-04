@@ -1,22 +1,21 @@
 #!/bin/bash
-# Startup script for Moltbot in Cloudflare Sandbox
-# Cache bust: 2026-02-03-rebuild-v11-baseurl-fix
+# Startup script for OpenClaw in Cloudflare Sandbox
+# Cache bust: 2026-02-04-v8-force-new-container
 # This script:
 # 1. Restores config from R2 backup if available
-# 2. Configures moltbot from environment variables
+# 2. Configures openclaw from environment variables
 # 3. Starts a background sync to backup config to R2
 # 4. Starts the gateway
 
 set -e
 
-# Check if clawdbot gateway is already running - bail early if so
-# Note: CLI is still named "clawdbot" until upstream renames it
-if pgrep -f "clawdbot gateway" > /dev/null 2>&1; then
-    echo "Moltbot gateway is already running, exiting."
+# Check if openclaw gateway is already running - bail early if so
+if pgrep -f "openclaw gateway" > /dev/null 2>&1; then
+    echo "OpenClaw gateway is already running, exiting."
     exit 0
 fi
 
-# Paths (clawdbot paths are used internally - upstream hasn't renamed yet)
+# Paths (still uses .clawdbot for backwards compatibility)
 CONFIG_DIR="/root/.clawdbot"
 CONFIG_FILE="$CONFIG_DIR/clawdbot.json"
 TEMPLATE_DIR="/root/.clawdbot-templates"
@@ -40,30 +39,30 @@ mkdir -p "$CONFIG_DIR"
 should_restore_from_r2() {
     local R2_SYNC_FILE="$BACKUP_DIR/.last-sync"
     local LOCAL_SYNC_FILE="$CONFIG_DIR/.last-sync"
-    
+
     # If no R2 sync timestamp, don't restore
     if [ ! -f "$R2_SYNC_FILE" ]; then
         echo "No R2 sync timestamp found, skipping restore"
         return 1
     fi
-    
+
     # If no local sync timestamp, restore from R2
     if [ ! -f "$LOCAL_SYNC_FILE" ]; then
         echo "No local sync timestamp, will restore from R2"
         return 0
     fi
-    
+
     # Compare timestamps
     R2_TIME=$(cat "$R2_SYNC_FILE" 2>/dev/null)
     LOCAL_TIME=$(cat "$LOCAL_SYNC_FILE" 2>/dev/null)
-    
+
     echo "R2 last sync: $R2_TIME"
     echo "Local last sync: $LOCAL_TIME"
-    
+
     # Convert to epoch seconds for comparison
     R2_EPOCH=$(date -d "$R2_TIME" +%s 2>/dev/null || echo "0")
     LOCAL_EPOCH=$(date -d "$LOCAL_TIME" +%s 2>/dev/null || echo "0")
-    
+
     if [ "$R2_EPOCH" -gt "$LOCAL_EPOCH" ]; then
         echo "R2 backup is newer, will restore"
         return 0
@@ -132,6 +131,42 @@ else
 fi
 
 # ============================================================
+# SETUP OAUTH AUTH PROFILE (if Claude Max token provided)
+# ============================================================
+if [ -n "$CLAUDE_ACCESS_TOKEN" ]; then
+    echo "Setting up Claude Max OAuth auth profile..."
+    OPENCLAW_DIR="/root/.openclaw"
+    AUTH_PROFILE_DIR="$OPENCLAW_DIR/credentials"
+    mkdir -p "$AUTH_PROFILE_DIR"
+
+    # Create oauth.json with the token
+    cat > "$AUTH_PROFILE_DIR/oauth.json" << EOFAUTH
+{
+  "anthropic": {
+    "accessToken": "$CLAUDE_ACCESS_TOKEN",
+    "refreshToken": "${CLAUDE_REFRESH_TOKEN:-}",
+    "expiresAt": 9999999999999
+  }
+}
+EOFAUTH
+    echo "OAuth profile created at $AUTH_PROFILE_DIR/oauth.json"
+
+    # Also create auth-profiles.json for the default agent
+    AGENT_AUTH_DIR="$OPENCLAW_DIR/agents/default/agent"
+    mkdir -p "$AGENT_AUTH_DIR"
+    cat > "$AGENT_AUTH_DIR/auth-profiles.json" << EOFAGENTAUTH
+{
+  "anthropic": {
+    "type": "oauth",
+    "accessToken": "$CLAUDE_ACCESS_TOKEN",
+    "refreshToken": "${CLAUDE_REFRESH_TOKEN:-}"
+  }
+}
+EOFAGENTAUTH
+    echo "Agent auth profile created at $AGENT_AUTH_DIR/auth-profiles.json"
+fi
+
+# ============================================================
 # UPDATE CONFIG FROM ENVIRONMENT VARIABLES
 # ============================================================
 node << EOFNODE
@@ -154,8 +189,7 @@ config.agents.defaults.model = config.agents.defaults.model || {};
 config.gateway = config.gateway || {};
 config.channels = config.channels || {};
 
-// Clean up any broken anthropic provider config from previous runs
-// (older versions didn't include required 'name' field)
+// Clean up any broken provider configs from previous runs
 if (config.models?.providers?.anthropic?.models) {
     const hasInvalidModels = config.models.providers.anthropic.models.some(m => !m.name);
     if (hasInvalidModels) {
@@ -169,8 +203,6 @@ if (config.channels?.telegram?.dm !== undefined) {
     console.log('Removing invalid dm key from telegram config');
     delete config.channels.telegram.dm;
 }
-
-
 
 // Gateway configuration
 config.gateway.port = 18789;
@@ -201,6 +233,13 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     } else {
         config.channels.telegram.dmPolicy = process.env.TELEGRAM_DM_POLICY || 'pairing';
     }
+    // Group chat configuration
+    config.channels.telegram.groupPolicy = 'open';      // 'open', 'allowlist', or 'disabled'
+    config.channels.telegram.groupAllowFrom = ['*'];    // Allow all senders in groups
+    config.channels.telegram.groups = config.channels.telegram.groups || {};
+    config.channels.telegram.groups['*'] = {            // Global defaults for all groups
+        requireMention: false                           // Respond to ALL messages (no mention needed)
+    };
 }
 
 // Discord configuration
@@ -220,67 +259,24 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     config.channels.slack.enabled = true;
 }
 
-// Base URL override (e.g., for Cloudflare AI Gateway)
-// Usage: Set AI_GATEWAY_BASE_URL or ANTHROPIC_BASE_URL to your endpoint like:
-//   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic
-//   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai
-const baseUrl = (process.env.AI_GATEWAY_BASE_URL || process.env.ANTHROPIC_BASE_URL || '').replace(/\/+$/, '');
-const isOpenAI = baseUrl.endsWith('/openai');
+// ============================================================
+// MODEL PROVIDER CONFIGURATION
+// ============================================================
+// Priority: Claude Max OAuth > AI Gateway > Direct API
 
-if (isOpenAI) {
-    // Create custom openai provider config with baseUrl override
-    // Omit apiKey so moltbot falls back to OPENAI_API_KEY env var
-    console.log('Configuring OpenAI provider with base URL:', baseUrl);
-    config.models = config.models || {};
-    config.models.providers = config.models.providers || {};
-    config.models.providers.openai = {
-        baseUrl: baseUrl,
-        api: 'openai-responses',
-        models: [
-            { id: 'gpt-5.2', name: 'GPT-5.2', contextWindow: 200000 },
-            { id: 'gpt-5', name: 'GPT-5', contextWindow: 200000 },
-            { id: 'gpt-4.5-preview', name: 'GPT-4.5 Preview', contextWindow: 128000 },
-        ]
-    };
-    // Add models to the allowlist so they appear in /models
-    config.agents.defaults.models = config.agents.defaults.models || {};
-    config.agents.defaults.models['openai/gpt-5.2'] = { alias: 'GPT-5.2' };
-    config.agents.defaults.models['openai/gpt-5'] = { alias: 'GPT-5' };
-    config.agents.defaults.models['openai/gpt-4.5-preview'] = { alias: 'GPT-4.5' };
-    config.agents.defaults.model.primary = 'openai/gpt-5.2';
-} else if (baseUrl) {
-    console.log('Configuring Anthropic provider with base URL:', baseUrl);
-    config.models = config.models || {};
-    config.models.providers = config.models.providers || {};
-    const providerConfig = {
-        baseUrl: baseUrl,
-        api: 'anthropic-messages',
-        models: [
-            { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', contextWindow: 200000 },
-            { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', contextWindow: 200000 },
-            { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', contextWindow: 200000 },
-        ]
-    };
-    // Include API key in provider config if set (required when using custom baseUrl)
-    if (process.env.ANTHROPIC_API_KEY) {
-        providerConfig.apiKey = process.env.ANTHROPIC_API_KEY;
-    }
-    config.models.providers.anthropic = providerConfig;
-    // Add models to the allowlist so they appear in /models
-    config.agents.defaults.models = config.agents.defaults.models || {};
-    config.agents.defaults.models['anthropic/claude-opus-4-5-20251101'] = { alias: 'Opus 4.5' };
-    config.agents.defaults.models['anthropic/claude-sonnet-4-5-20250929'] = { alias: 'Sonnet 4.5' };
-    config.agents.defaults.models['anthropic/claude-haiku-4-5-20251001'] = { alias: 'Haiku 4.5' };
-    config.agents.defaults.model.primary = 'anthropic/claude-sonnet-4-5-20250929';
-} else {
-    // Default to Anthropic direct API - must define provider explicitly
-    // because moltbot's built-in catalog doesn't include newer models
-    console.log('Configuring Anthropic provider for direct API access');
-    config.models = config.models || {};
-    config.models.providers = config.models.providers || {};
-    const providerConfig = {
+config.models = config.models || {};
+config.models.providers = config.models.providers || {};
+
+// Check for Claude Max OAuth token (uses subscription instead of API credits)
+if (process.env.CLAUDE_ACCESS_TOKEN) {
+    console.log('Configuring Claude Max OAuth authentication (subscription-based)');
+
+    // Use anthropic provider with OAuth token
+    // OAuth tokens (sk-ant-oat) work with standard Anthropic API endpoint
+    config.models.providers.anthropic = {
         baseUrl: 'https://api.anthropic.com',
         api: 'anthropic-messages',
+        apiKey: process.env.CLAUDE_ACCESS_TOKEN,
         models: [
             { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', contextWindow: 200000 },
             { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', contextWindow: 200000 },
@@ -288,19 +284,90 @@ if (isOpenAI) {
             { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', contextWindow: 200000 },
         ]
     };
-    // Include API key in provider config if set
-    if (process.env.ANTHROPIC_API_KEY) {
-        providerConfig.apiKey = process.env.ANTHROPIC_API_KEY;
-    }
-    config.models.providers.anthropic = providerConfig;
-    // Add models to the allowlist so they appear in /models
+
+    // Add models to the allowlist
     config.agents.defaults.models = config.agents.defaults.models || {};
     config.agents.defaults.models['anthropic/claude-opus-4-5-20251101'] = { alias: 'Opus 4.5' };
     config.agents.defaults.models['anthropic/claude-sonnet-4-5-20250929'] = { alias: 'Sonnet 4.5' };
     config.agents.defaults.models['anthropic/claude-sonnet-4-20250514'] = { alias: 'Sonnet 4' };
     config.agents.defaults.models['anthropic/claude-haiku-4-5-20251001'] = { alias: 'Haiku 4.5' };
-    // Use Sonnet 4.5 as default (latest)
+
+    // Use Claude Max as default
     config.agents.defaults.model.primary = 'anthropic/claude-sonnet-4-5-20250929';
+
+} else {
+    // Fallback to API key authentication
+    const baseUrl = (process.env.AI_GATEWAY_BASE_URL || process.env.ANTHROPIC_BASE_URL || '').replace(/\/+$/, '');
+    const isOpenAI = baseUrl.endsWith('/openai');
+
+    if (isOpenAI) {
+        console.log('Configuring OpenAI provider with base URL:', baseUrl);
+        config.models.providers.openai = {
+            baseUrl: baseUrl,
+            api: 'openai-responses',
+            models: [
+                { id: 'gpt-5.2', name: 'GPT-5.2', contextWindow: 200000 },
+                { id: 'gpt-5', name: 'GPT-5', contextWindow: 200000 },
+                { id: 'gpt-4.5-preview', name: 'GPT-4.5 Preview', contextWindow: 128000 },
+            ]
+        };
+        config.agents.defaults.models = config.agents.defaults.models || {};
+        config.agents.defaults.models['openai/gpt-5.2'] = { alias: 'GPT-5.2' };
+        config.agents.defaults.models['openai/gpt-5'] = { alias: 'GPT-5' };
+        config.agents.defaults.models['openai/gpt-4.5-preview'] = { alias: 'GPT-4.5' };
+        config.agents.defaults.model.primary = 'openai/gpt-5.2';
+    } else if (baseUrl) {
+        console.log('Configuring Anthropic provider with base URL:', baseUrl);
+        const providerConfig = {
+            baseUrl: baseUrl,
+            api: 'anthropic-messages',
+            models: [
+                { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', contextWindow: 200000 },
+                { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', contextWindow: 200000 },
+                { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', contextWindow: 200000 },
+            ]
+        };
+        if (process.env.ANTHROPIC_API_KEY) {
+            providerConfig.apiKey = process.env.ANTHROPIC_API_KEY;
+        }
+        config.models.providers.anthropic = providerConfig;
+        config.agents.defaults.models = config.agents.defaults.models || {};
+        config.agents.defaults.models['anthropic/claude-opus-4-5-20251101'] = { alias: 'Opus 4.5' };
+        config.agents.defaults.models['anthropic/claude-sonnet-4-5-20250929'] = { alias: 'Sonnet 4.5' };
+        config.agents.defaults.models['anthropic/claude-haiku-4-5-20251001'] = { alias: 'Haiku 4.5' };
+        config.agents.defaults.model.primary = 'anthropic/claude-sonnet-4-5-20250929';
+    } else {
+        console.log('Configuring Anthropic provider for direct API access');
+        const providerConfig = {
+            baseUrl: 'https://api.anthropic.com',
+            api: 'anthropic-messages',
+            models: [
+                { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', contextWindow: 200000 },
+                { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', contextWindow: 200000 },
+                { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', contextWindow: 200000 },
+                { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', contextWindow: 200000 },
+            ]
+        };
+        if (process.env.ANTHROPIC_API_KEY) {
+            providerConfig.apiKey = process.env.ANTHROPIC_API_KEY;
+        }
+        config.models.providers.anthropic = providerConfig;
+        config.agents.defaults.models = config.agents.defaults.models || {};
+        config.agents.defaults.models['anthropic/claude-opus-4-5-20251101'] = { alias: 'Opus 4.5' };
+        config.agents.defaults.models['anthropic/claude-sonnet-4-5-20250929'] = { alias: 'Sonnet 4.5' };
+        config.agents.defaults.models['anthropic/claude-sonnet-4-20250514'] = { alias: 'Sonnet 4' };
+        config.agents.defaults.models['anthropic/claude-haiku-4-5-20251001'] = { alias: 'Haiku 4.5' };
+        config.agents.defaults.model.primary = 'anthropic/claude-sonnet-4-5-20250929';
+    }
+}
+
+// Web search configuration (Brave Search API)
+if (process.env.BRAVE_API_KEY) {
+    console.log('Configuring Brave Search API');
+    config.tools = config.tools || {};
+    config.tools.web = config.tools.web || {};
+    config.tools.web.search = config.tools.web.search || {};
+    config.tools.web.search.apiKey = process.env.BRAVE_API_KEY;
 }
 
 // Write updated config
@@ -313,7 +380,7 @@ EOFNODE
 # START GATEWAY
 # ============================================================
 # Note: R2 backup sync is handled by the Worker's cron trigger
-echo "Starting Moltbot Gateway..."
+echo "Starting OpenClaw Gateway..."
 echo "Gateway will be available on port 18789"
 
 # Clean up stale lock files
@@ -325,8 +392,8 @@ echo "Dev mode: ${CLAWDBOT_DEV_MODE:-false}, Bind mode: $BIND_MODE"
 
 if [ -n "$CLAWDBOT_GATEWAY_TOKEN" ]; then
     echo "Starting gateway with token auth..."
-    exec clawdbot gateway --port 18789 --verbose --allow-unconfigured --bind "$BIND_MODE" --token "$CLAWDBOT_GATEWAY_TOKEN"
+    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind "$BIND_MODE" --token "$CLAWDBOT_GATEWAY_TOKEN"
 else
     echo "Starting gateway with device pairing (no token)..."
-    exec clawdbot gateway --port 18789 --verbose --allow-unconfigured --bind "$BIND_MODE"
+    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind "$BIND_MODE"
 fi

@@ -55,6 +55,17 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (env.SLACK_APP_TOKEN) envVars.SLACK_APP_TOKEN = env.SLACK_APP_TOKEN;
   if (env.CDP_SECRET) envVars.CDP_SECRET = env.CDP_SECRET;
   if (env.WORKER_URL) envVars.WORKER_URL = env.WORKER_URL;
+  if (env.BRAVE_API_KEY) envVars.BRAVE_API_KEY = env.BRAVE_API_KEY;
+
+  // Claude Max OAuth token - map to both CLAUDE_ACCESS_TOKEN and ANTHROPIC_API_KEY
+  if (env.CLAUDE_ACCESS_TOKEN) {
+    envVars.CLAUDE_ACCESS_TOKEN = env.CLAUDE_ACCESS_TOKEN;
+    // Also set as ANTHROPIC_API_KEY so OpenClaw can use it
+    if (!envVars.ANTHROPIC_API_KEY) {
+      envVars.ANTHROPIC_API_KEY = env.CLAUDE_ACCESS_TOKEN;
+    }
+  }
+  if (env.CLAUDE_REFRESH_TOKEN) envVars.CLAUDE_REFRESH_TOKEN = env.CLAUDE_REFRESH_TOKEN;
 
   return envVars;
 }
