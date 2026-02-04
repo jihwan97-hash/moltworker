@@ -1,6 +1,6 @@
 #!/bin/bash
 # Startup script for OpenClaw in Cloudflare Sandbox
-# Cache bust: 2026-02-04-v8-force-new-container
+# Cache bust: 2026-02-04-v9-openclaw-native-config
 # This script:
 # 1. Restores config from R2 backup if available
 # 2. Configures openclaw from environment variables
@@ -15,12 +15,15 @@ if pgrep -f "openclaw gateway" > /dev/null 2>&1; then
     exit 0
 fi
 
-# Paths (still uses .clawdbot for backwards compatibility)
-CONFIG_DIR="/root/.clawdbot"
-CONFIG_FILE="$CONFIG_DIR/clawdbot.json"
+# Paths - use new OpenClaw native paths
+CONFIG_DIR="/root/.openclaw"
+CONFIG_FILE="$CONFIG_DIR/openclaw.json"
 TEMPLATE_DIR="/root/.clawdbot-templates"
 TEMPLATE_FILE="$TEMPLATE_DIR/moltbot.json.template"
 BACKUP_DIR="/data/moltbot"
+
+# Also keep legacy path for migration
+LEGACY_CONFIG_DIR="/root/.clawdbot"
 
 echo "Config directory: $CONFIG_DIR"
 echo "Backup directory: $BACKUP_DIR"
@@ -72,21 +75,22 @@ should_restore_from_r2() {
     fi
 }
 
-if [ -f "$BACKUP_DIR/clawdbot/clawdbot.json" ]; then
+# Check for OpenClaw native config backup first, then legacy
+if [ -f "$BACKUP_DIR/openclaw/openclaw.json" ]; then
     if should_restore_from_r2; then
-        echo "Restoring from R2 backup at $BACKUP_DIR/clawdbot..."
-        cp -a "$BACKUP_DIR/clawdbot/." "$CONFIG_DIR/"
-        # Copy the sync timestamp to local so we know what version we have
+        echo "Restoring from R2 backup at $BACKUP_DIR/openclaw..."
+        cp -a "$BACKUP_DIR/openclaw/." "$CONFIG_DIR/"
         cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
-        echo "Restored config from R2 backup"
+        echo "Restored config from R2 backup (openclaw format)"
     fi
-elif [ -f "$BACKUP_DIR/clawdbot.json" ]; then
-    # Legacy backup format (flat structure)
+elif [ -f "$BACKUP_DIR/clawdbot/clawdbot.json" ]; then
+    # Legacy backup - copy to legacy dir, openclaw will migrate
     if should_restore_from_r2; then
-        echo "Restoring from legacy R2 backup at $BACKUP_DIR..."
-        cp -a "$BACKUP_DIR/." "$CONFIG_DIR/"
-        cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
-        echo "Restored config from legacy R2 backup"
+        echo "Restoring from legacy R2 backup at $BACKUP_DIR/clawdbot..."
+        mkdir -p "$LEGACY_CONFIG_DIR"
+        cp -a "$BACKUP_DIR/clawdbot/." "$LEGACY_CONFIG_DIR/"
+        cp -f "$BACKUP_DIR/.last-sync" "$LEGACY_CONFIG_DIR/.last-sync" 2>/dev/null || true
+        echo "Restored config from R2 backup (legacy format, will be migrated)"
     fi
 elif [ -d "$BACKUP_DIR" ]; then
     echo "R2 mounted at $BACKUP_DIR but no backup data found yet"
@@ -172,12 +176,27 @@ fi
 node << EOFNODE
 const fs = require('fs');
 
-const configPath = '/root/.clawdbot/clawdbot.json';
+// OpenClaw native path (newer versions)
+const configPath = '/root/.openclaw/openclaw.json';
+const legacyConfigPath = '/root/.clawdbot/clawdbot.json';
+
+// Ensure config directory exists
+const configDir = '/root/.openclaw';
+if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+}
+
 console.log('Updating config at:', configPath);
 let config = {};
 
 try {
-    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    // Try new path first, then legacy
+    if (fs.existsSync(configPath)) {
+        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    } else if (fs.existsSync(legacyConfigPath)) {
+        config = JSON.parse(fs.readFileSync(legacyConfigPath, 'utf8'));
+        console.log('Loaded from legacy config, will save to new path');
+    }
 } catch (e) {
     console.log('Starting with empty config');
 }
@@ -257,6 +276,22 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     config.channels.slack.botToken = process.env.SLACK_BOT_TOKEN;
     config.channels.slack.appToken = process.env.SLACK_APP_TOKEN;
     config.channels.slack.enabled = true;
+}
+
+// ============================================================
+// PLUGINS CONFIGURATION (required to enable channels)
+// ============================================================
+config.plugins = config.plugins || {};
+config.plugins.entries = config.plugins.entries || {};
+
+if (process.env.TELEGRAM_BOT_TOKEN) {
+    config.plugins.entries.telegram = { enabled: true };
+}
+if (process.env.DISCORD_BOT_TOKEN) {
+    config.plugins.entries.discord = { enabled: true };
+}
+if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
+    config.plugins.entries.slack = { enabled: true };
 }
 
 // ============================================================
