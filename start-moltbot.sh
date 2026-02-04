@@ -1,6 +1,6 @@
 #!/bin/bash
 # Startup script for OpenClaw in Cloudflare Sandbox
-# Cache bust: 2026-02-04-v9-openclaw-native-config
+# Cache bust: 2026-02-04-v20-health-check
 # This script:
 # 1. Restores config from R2 backup if available
 # 2. Configures openclaw from environment variables
@@ -30,6 +30,12 @@ echo "Backup directory: $BACKUP_DIR"
 
 # Create config directory
 mkdir -p "$CONFIG_DIR"
+
+# Force fresh config (remove any existing config with bad settings)
+# This ensures we always start with a clean config from the script
+rm -f "$CONFIG_DIR/openclaw.json" 2>/dev/null || true
+rm -f "$LEGACY_CONFIG_DIR/clawdbot.json" 2>/dev/null || true
+echo "Cleared any existing config files for fresh start"
 
 # ============================================================
 # RESTORE FROM R2 BACKUP
@@ -139,35 +145,27 @@ fi
 # ============================================================
 if [ -n "$CLAUDE_ACCESS_TOKEN" ]; then
     echo "Setting up Claude Max OAuth auth profile..."
-    OPENCLAW_DIR="/root/.openclaw"
-    AUTH_PROFILE_DIR="$OPENCLAW_DIR/credentials"
-    mkdir -p "$AUTH_PROFILE_DIR"
 
-    # Create oauth.json with the token
-    cat > "$AUTH_PROFILE_DIR/oauth.json" << EOFAUTH
-{
-  "anthropic": {
-    "accessToken": "$CLAUDE_ACCESS_TOKEN",
-    "refreshToken": "${CLAUDE_REFRESH_TOKEN:-}",
-    "expiresAt": 9999999999999
-  }
-}
-EOFAUTH
-    echo "OAuth profile created at $AUTH_PROFILE_DIR/oauth.json"
-
-    # Also create auth-profiles.json for the default agent
-    AGENT_AUTH_DIR="$OPENCLAW_DIR/agents/default/agent"
+    # Create auth-profiles.json directly with OpenClaw's expected format
+    # Format from docs: { access, refresh, expires, accountId }
+    AGENT_AUTH_DIR="/root/.openclaw/agents/default/agent"
     mkdir -p "$AGENT_AUTH_DIR"
+
+    # Create profile with anthropic:manual profile ID (matches paste-token default)
+    # Format: { access, refresh, expires, accountId }
     cat > "$AGENT_AUTH_DIR/auth-profiles.json" << EOFAGENTAUTH
 {
-  "anthropic": {
-    "type": "oauth",
-    "accessToken": "$CLAUDE_ACCESS_TOKEN",
-    "refreshToken": "${CLAUDE_REFRESH_TOKEN:-}"
+  "anthropic:manual": {
+    "access": "$CLAUDE_ACCESS_TOKEN",
+    "refresh": "${CLAUDE_REFRESH_TOKEN:-}",
+    "expires": 9999999999999
   }
 }
 EOFAGENTAUTH
-    echo "Agent auth profile created at $AGENT_AUTH_DIR/auth-profiles.json"
+    echo "Auth profile created at $AGENT_AUTH_DIR/auth-profiles.json"
+    cat "$AGENT_AUTH_DIR/auth-profiles.json"
+
+    echo "Auth profile setup complete"
 fi
 
 # ============================================================
@@ -240,6 +238,10 @@ if (process.env.CLAWDBOT_DEV_MODE === 'true') {
     config.gateway.controlUi.allowInsecureAuth = true;
 }
 
+// Ensure agents defaults exist (sandbox is not set - uses default)
+config.agents = config.agents || {};
+config.agents.defaults = config.agents.defaults || {};
+
 // Telegram configuration
 if (process.env.TELEGRAM_BOT_TOKEN) {
     config.channels.telegram = config.channels.telegram || {};
@@ -297,21 +299,20 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
 // ============================================================
 // MODEL PROVIDER CONFIGURATION
 // ============================================================
-// Priority: Claude Max OAuth > AI Gateway > Direct API
+// Priority: Claude Max OAuth > API Key > AI Gateway
 
 config.models = config.models || {};
 config.models.providers = config.models.providers || {};
 
-// Check for Claude Max OAuth token (uses subscription instead of API credits)
+// Check for Claude Max OAuth token first (CLAUDE_ACCESS_TOKEN)
 if (process.env.CLAUDE_ACCESS_TOKEN) {
     console.log('Configuring Claude Max OAuth authentication (subscription-based)');
 
-    // Use anthropic provider with OAuth token
-    // OAuth tokens (sk-ant-oat) work with standard Anthropic API endpoint
+    // Configure anthropic provider with OAuth token
+    // OpenClaw's latest version should handle sk-ant-oat tokens via auth profile
     config.models.providers.anthropic = {
         baseUrl: 'https://api.anthropic.com',
         api: 'anthropic-messages',
-        apiKey: process.env.CLAUDE_ACCESS_TOKEN,
         models: [
             { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', contextWindow: 200000 },
             { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', contextWindow: 200000 },
@@ -327,7 +328,7 @@ if (process.env.CLAUDE_ACCESS_TOKEN) {
     config.agents.defaults.models['anthropic/claude-sonnet-4-20250514'] = { alias: 'Sonnet 4' };
     config.agents.defaults.models['anthropic/claude-haiku-4-5-20251001'] = { alias: 'Haiku 4.5' };
 
-    // Use Claude Max as default
+    // Use Claude Sonnet as default
     config.agents.defaults.model.primary = 'anthropic/claude-sonnet-4-5-20250929';
 
 } else {

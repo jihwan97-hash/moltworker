@@ -67,15 +67,15 @@ function validateRequiredEnv(env: MoltbotEnv): string[] {
     missing.push('CF_ACCESS_AUD');
   }
 
-  // Check for AI Gateway or direct Anthropic configuration
+  // Check for AI Gateway, Claude Max OAuth, or direct Anthropic configuration
   if (env.AI_GATEWAY_API_KEY) {
     // AI Gateway requires both API key and base URL
     if (!env.AI_GATEWAY_BASE_URL) {
       missing.push('AI_GATEWAY_BASE_URL (required when using AI_GATEWAY_API_KEY)');
     }
-  } else if (!env.ANTHROPIC_API_KEY) {
-    // Direct Anthropic access requires API key
-    missing.push('ANTHROPIC_API_KEY or AI_GATEWAY_API_KEY');
+  } else if (!env.ANTHROPIC_API_KEY && !env.CLAUDE_ACCESS_TOKEN) {
+    // Direct Anthropic access requires API key or Claude Max OAuth token
+    missing.push('ANTHROPIC_API_KEY, AI_GATEWAY_API_KEY, or CLAUDE_ACCESS_TOKEN');
   }
 
   return missing;
@@ -383,7 +383,7 @@ app.all('*', async (c) => {
 
 /**
  * Scheduled handler for cron triggers.
- * Syncs moltbot config/state from container to R2 for persistence.
+ * Runs health check and syncs moltbot config/state to R2.
  */
 async function scheduled(
   _event: ScheduledEvent,
@@ -393,9 +393,39 @@ async function scheduled(
   const options = buildSandboxOptions(env);
   const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
+  // Health check: ensure the gateway is running and responding
+  console.log('[cron] Running health check...');
+  try {
+    const process = await findExistingMoltbotProcess(sandbox);
+    if (!process) {
+      console.log('[cron] Gateway not running, starting it...');
+      await ensureMoltbotGateway(sandbox, env);
+      console.log('[cron] Gateway started successfully');
+    } else {
+      console.log('[cron] Gateway process found:', process.id, 'status:', process.status);
+      // Try to ensure it's actually responding
+      try {
+        await process.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 10000 });
+        console.log('[cron] Gateway is healthy and responding');
+      } catch (e) {
+        console.log('[cron] Gateway not responding, restarting...');
+        try {
+          await process.kill();
+        } catch (killError) {
+          console.log('[cron] Could not kill process:', killError);
+        }
+        await ensureMoltbotGateway(sandbox, env);
+        console.log('[cron] Gateway restarted successfully');
+      }
+    }
+  } catch (e) {
+    console.error('[cron] Health check failed:', e);
+  }
+
+  // Backup sync to R2
   console.log('[cron] Starting backup sync to R2...');
   const result = await syncToR2(sandbox, env);
-  
+
   if (result.success) {
     console.log('[cron] Backup sync completed successfully at', result.lastSync);
   } else {

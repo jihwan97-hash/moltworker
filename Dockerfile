@@ -1,6 +1,6 @@
 FROM docker.io/cloudflare/sandbox:0.7.0
 
-# Build cache bust: 2026-02-04-v3-telegram-plugins-fix
+# Build cache bust: 2026-02-04-v4-disable-docker-sandbox
 # Install Node.js 22 (required by openclaw) and rsync (for R2 backup sync)
 # The base image has Node 20, we need to replace it with Node 22
 # Using direct binary download for reliability
@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y xz-utils ca-certificates rsync \
 RUN npm install -g pnpm
 
 # Install openclaw (latest version with OAuth support)
-RUN npm install -g openclaw@2026.2.1 \
+RUN npm install -g openclaw@latest \
     && openclaw --version
 
 # Create openclaw directories
@@ -28,7 +28,7 @@ RUN mkdir -p /root/.clawdbot \
 
 # Copy startup script (version: 2026-02-04-v3)
 COPY start-moltbot.sh /usr/local/bin/start-moltbot.sh
-RUN chmod +x /usr/local/bin/start-moltbot.sh && echo "start-moltbot.sh version: 2026-02-04-v3"
+RUN chmod +x /usr/local/bin/start-moltbot.sh && echo "start-moltbot.sh version: 2026-02-04-v20-health-check"
 
 # Copy default configuration template
 COPY moltbot.json.template /root/.clawdbot-templates/moltbot.json.template
