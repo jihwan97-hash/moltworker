@@ -1,6 +1,6 @@
 #!/bin/bash
-# OpenClaw Startup Script v50 - Performance & Reliability Improvements
-# Cache bust: 2026-02-06-v50-optimized
+# OpenClaw Startup Script v51 - Fix model config format
+# Cache bust: 2026-02-06-v51-model-fix
 
 set -e
 trap 'echo "[ERROR] Script failed at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -62,7 +62,10 @@ cat > "$CONFIG_DIR/openclaw.json" << 'EOFCONFIG'
   "agents": {
     "defaults": {
       "workspace": "/root/clawd",
-      "model": "anthropic/claude-sonnet-4-5"
+      "model": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-5"
+      }
     }
   },
   "gateway": {
