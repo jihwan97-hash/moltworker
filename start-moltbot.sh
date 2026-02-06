@@ -1,6 +1,6 @@
 #!/bin/bash
-# OpenClaw Startup Script v48 - Fixed R2 sync hanging
-# Cache bust: 2026-02-05-v48-cp-timeout
+# OpenClaw Startup Script v49 - Set Sonnet 4.5 as default
+# Cache bust: 2026-02-06-v49-sonnet
 
 echo "============================================"
 echo "Starting OpenClaw v46 (with persistence)"
@@ -45,7 +45,8 @@ cat > "$CONFIG_DIR/openclaw.json" << 'EOFCONFIG'
 {
   "agents": {
     "defaults": {
-      "workspace": "/root/clawd"
+      "workspace": "/root/clawd",
+      "model": "anthropic/claude-sonnet-4-5"
     }
   },
   "gateway": {
