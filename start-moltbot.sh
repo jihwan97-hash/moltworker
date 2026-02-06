@@ -1,9 +1,20 @@
 #!/bin/bash
-# OpenClaw Startup Script v49 - Set Sonnet 4.5 as default
-# Cache bust: 2026-02-06-v49-sonnet
+# OpenClaw Startup Script v50 - Performance & Reliability Improvements
+# Cache bust: 2026-02-06-v50-optimized
+
+set -e
+trap 'echo "[ERROR] Script failed at line $LINENO: $BASH_COMMAND" >&2' ERR
+
+# Timing utilities
+START_TIME=$(date +%s)
+log_timing() {
+  local now=$(date +%s)
+  local elapsed=$((now - START_TIME))
+  echo "[TIMING] $1 (${elapsed}s elapsed)"
+}
 
 echo "============================================"
-echo "Starting OpenClaw v46 (with persistence)"
+echo "Starting OpenClaw v50 (optimized)"
 echo "============================================"
 
 CONFIG_DIR="/root/.openclaw"
@@ -35,12 +46,17 @@ restore_from_r2() {
   fi
 }
 
-# Try to restore from R2 first
-mkdir -p "$CONFIG_DIR"
-restore_from_r2
-RESTORED=$?
+log_timing "Initialization started"
 
-# Create/update config file
+# Create config directory
+mkdir -p "$CONFIG_DIR"
+
+# Start R2 restore in background (parallel execution)
+restore_from_r2 &
+RESTORE_PID=$!
+log_timing "R2 restore started in background"
+
+# Write config in parallel (doesn't depend on restore)
 cat > "$CONFIG_DIR/openclaw.json" << 'EOFCONFIG'
 {
   "agents": {
@@ -55,18 +71,24 @@ cat > "$CONFIG_DIR/openclaw.json" << 'EOFCONFIG'
   }
 }
 EOFCONFIG
+log_timing "Config file written"
 
-echo "Config written:"
+# Wait for R2 restore to complete
+wait $RESTORE_PID 2>/dev/null || true
+log_timing "R2 restore completed"
+
+echo "Config:"
 cat "$CONFIG_DIR/openclaw.json"
 
-# Check if TELEGRAM_BOT_TOKEN is set
-if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
-  echo "TELEGRAM_BOT_TOKEN is set, Telegram should be auto-configured"
+# Conditional doctor execution - only run if channel tokens are set
+if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$DISCORD_BOT_TOKEN" ] || [ -n "$SLACK_BOT_TOKEN" ]; then
+  echo "Channel tokens detected, running openclaw doctor --fix..."
+  log_timing "Doctor started"
+  timeout 60 openclaw doctor --fix || true
+  log_timing "Doctor completed"
+else
+  echo "No channel tokens set, skipping doctor"
 fi
-
-# Run doctor to auto-configure channels from environment
-echo "Running openclaw doctor --fix..."
-openclaw doctor --fix || true
 
 # Start background sync process (every 60 seconds)
 (
@@ -81,5 +103,5 @@ echo "Background sync started (PID: $SYNC_PID)"
 # Trap to sync on exit
 trap 'echo "Shutting down, syncing to R2..."; sync_to_r2; kill $SYNC_PID 2>/dev/null' EXIT INT TERM
 
-echo "Starting gateway..."
+log_timing "Starting gateway"
 exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan

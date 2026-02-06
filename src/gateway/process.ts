@@ -4,6 +4,12 @@ import { MOLTBOT_PORT, STARTUP_TIMEOUT_MS } from '../config';
 import { buildEnvVars } from './env';
 import { mountR2Storage } from './r2';
 
+// Auto-recovery configuration
+const MAX_RECOVERY_ATTEMPTS = 3;
+const RECOVERY_COOLDOWN_MS = 30_000; // 30s minimum between recovery cycles
+let recoveryAttempts = 0;
+let lastRecoveryTime = 0;
+
 /**
  * Find an existing Moltbot gateway process
  * 
@@ -119,6 +125,62 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
 
   // Verify gateway is actually responding
   console.log('[Gateway] Verifying gateway health...');
-  
+
   return process;
+}
+
+/**
+ * Ensure the Moltbot gateway is running with auto-recovery
+ *
+ * Wraps ensureMoltbotGateway with exponential backoff retry logic:
+ * - Max 3 retry attempts
+ * - Exponential backoff (2s, 4s, 8s)
+ * - 30s cooldown between recovery cycles
+ *
+ * @param sandbox - The sandbox instance
+ * @param env - Worker environment bindings
+ * @returns The running gateway process
+ */
+export async function ensureMoltbotGatewayWithRecovery(
+  sandbox: Sandbox,
+  env: MoltbotEnv
+): Promise<Process> {
+  try {
+    return await ensureMoltbotGateway(sandbox, env);
+  } catch (error) {
+    const now = Date.now();
+
+    // Reset attempts after cooldown period
+    if (now - lastRecoveryTime > RECOVERY_COOLDOWN_MS) {
+      recoveryAttempts = 0;
+    }
+
+    if (recoveryAttempts < MAX_RECOVERY_ATTEMPTS) {
+      recoveryAttempts++;
+      lastRecoveryTime = now;
+
+      console.log(`[Recovery] Attempt ${recoveryAttempts}/${MAX_RECOVERY_ATTEMPTS} after error:`, error);
+
+      // Exponential backoff: 2s, 4s, 8s
+      const waitTime = Math.pow(2, recoveryAttempts) * 1000;
+      console.log(`[Recovery] Waiting ${waitTime}ms before retry...`);
+      await new Promise(r => setTimeout(r, waitTime));
+
+      // Kill any stuck processes
+      const stuck = await findExistingMoltbotProcess(sandbox);
+      if (stuck) {
+        console.log('[Recovery] Killing stuck process:', stuck.id);
+        try {
+          await stuck.kill();
+        } catch (killErr) {
+          console.log('[Recovery] Kill failed:', killErr);
+        }
+      }
+
+      // Retry
+      return await ensureMoltbotGateway(sandbox, env);
+    }
+
+    throw new Error(`Gateway failed after ${MAX_RECOVERY_ATTEMPTS} recovery attempts: ${error}`);
+  }
 }
