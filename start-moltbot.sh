@@ -1,6 +1,6 @@
 #!/bin/bash
-# OpenClaw Startup Script v51 - Fix model config format
-# Cache bust: 2026-02-06-v51-model-fix
+# OpenClaw Startup Script v52 - Write config after R2 restore
+# Cache bust: 2026-02-06-v52-config-order
 
 set -e
 trap 'echo "[ERROR] Script failed at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -51,12 +51,11 @@ log_timing "Initialization started"
 # Create config directory
 mkdir -p "$CONFIG_DIR"
 
-# Start R2 restore in background (parallel execution)
-restore_from_r2 &
-RESTORE_PID=$!
-log_timing "R2 restore started in background"
+# Restore from R2 first (restore credentials and sessions)
+restore_from_r2
+log_timing "R2 restore completed"
 
-# Write config in parallel (doesn't depend on restore)
+# Write config AFTER restore (overwrite any restored config with correct format)
 cat > "$CONFIG_DIR/openclaw.json" << 'EOFCONFIG'
 {
   "agents": {
@@ -75,10 +74,6 @@ cat > "$CONFIG_DIR/openclaw.json" << 'EOFCONFIG'
 }
 EOFCONFIG
 log_timing "Config file written"
-
-# Wait for R2 restore to complete
-wait $RESTORE_PID 2>/dev/null || true
-log_timing "R2 restore completed"
 
 echo "Config:"
 cat "$CONFIG_DIR/openclaw.json"
