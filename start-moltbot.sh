@@ -1,6 +1,6 @@
 #!/bin/bash
-# OpenClaw Startup Script v56 - Auto-restore cron jobs on startup
-# Cache bust: 2026-02-07-v56-cron-restore
+# OpenClaw Startup Script v57 - Symlink all repo contents to workspace
+# Cache bust: 2026-02-07-v57-symlink-all
 
 set -e
 trap 'echo "[ERROR] Script failed at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -86,16 +86,21 @@ if [ -n "$GITHUB_REPO_URL" ]; then
   fi
   log_timing "GitHub repo clone completed"
 
-  # Symlink OpenClaw bootstrap files from cloned repo into workspace
-  # OpenClaw auto-injects: AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, HEARTBEAT.md, BOOTSTRAP.md
+  # Symlink all repo contents into workspace (files + directories)
   if [ -d "$CLONE_DIR" ]; then
-    for f in AGENTS.md SOUL.md TOOLS.md IDENTITY.md USER.md HEARTBEAT.md BOOTSTRAP.md CONSTITUTION.md MEMORY.md SECURITY.md; do
-      if [ -f "$CLONE_DIR/$f" ]; then
-        ln -sf "$CLONE_DIR/$f" "/root/clawd/$f"
-        echo "Symlinked $f -> $CLONE_DIR/$f"
+    for item in "$CLONE_DIR"/*; do
+      name=$(basename "$item")
+      # Skip .git, README, and the clone dir itself
+      [ "$name" = ".git" ] && continue
+      [ "$name" = "README.md" ] && continue
+      if [ -d "$item" ]; then
+        ln -sfn "$item" "/root/clawd/$name"
+      else
+        ln -sf "$item" "/root/clawd/$name"
       fi
+      echo "Symlinked $name -> $item"
     done
-    echo "Bootstrap files symlinked from repo"
+    echo "All repo contents symlinked to workspace"
   fi
 else
   echo "No GITHUB_REPO_URL set, skipping repo clone"
