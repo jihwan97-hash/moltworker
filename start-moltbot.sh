@@ -1,6 +1,6 @@
 #!/bin/bash
-# OpenClaw Startup Script v57 - Symlink all repo contents to workspace
-# Cache bust: 2026-02-07-v57-symlink-all
+# OpenClaw Startup Script v58 - Fix model config after doctor
+# Cache bust: 2026-02-07-v58-model-fix
 
 set -e
 trap 'echo "[ERROR] Script failed at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -111,11 +111,7 @@ cat > "$CONFIG_DIR/openclaw.json" << 'EOFCONFIG'
 {
   "agents": {
     "defaults": {
-      "workspace": "/root/clawd",
-      "model": {
-        "provider": "anthropic",
-        "model": "claude-sonnet-4-5"
-      }
+      "workspace": "/root/clawd"
     }
   },
   "gateway": {
@@ -158,6 +154,10 @@ if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$DISCORD_BOT_TOKEN" ] || [ -n "$SLACK_B
 else
   echo "No channel tokens set, skipping doctor"
 fi
+
+# Set model AFTER doctor (doctor wipes model config)
+openclaw models set anthropic/claude-sonnet-4-5 2>/dev/null || true
+log_timing "Model set to claude-sonnet-4-5"
 
 # Start background sync process (every 60 seconds)
 (
