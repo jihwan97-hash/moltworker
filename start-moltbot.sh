@@ -1,6 +1,6 @@
 #!/bin/bash
-# OpenClaw Startup Script v55 - Fix git remote URL update on pull
-# Cache bust: 2026-02-07-v55-fix-git-remote
+# OpenClaw Startup Script v56 - Auto-restore cron jobs on startup
+# Cache bust: 2026-02-07-v56-cron-restore
 
 set -e
 trap 'echo "[ERROR] Script failed at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -168,6 +168,23 @@ echo "Background sync started (PID: $SYNC_PID)"
 trap 'echo "Shutting down, syncing to R2..."; sync_to_r2; kill $SYNC_PID 2>/dev/null' EXIT INT TERM
 
 log_timing "Starting gateway"
+
+# Restore cron jobs after gateway is ready (runs in background)
+CRON_SCRIPT="/root/clawd/clawd-memory/scripts/restore-crons.js"
+if [ -f "$CRON_SCRIPT" ]; then
+  (
+    # Wait for gateway to be ready
+    for i in $(seq 1 30); do
+      sleep 2
+      if nc -z 127.0.0.1 18789 2>/dev/null; then
+        echo "[CRON] Gateway ready, restoring cron jobs..."
+        node "$CRON_SCRIPT" 2>&1 || echo "[WARN] Cron restore failed"
+        break
+      fi
+    done
+  ) &
+  echo "Cron restore scheduled in background"
+fi
 
 # Disable exit-on-error for the restart loop (we handle exit codes explicitly)
 set +e
