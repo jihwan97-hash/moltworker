@@ -1,9 +1,20 @@
 #!/bin/bash
-# OpenClaw Startup Script v60 - Clear stale locks before gateway start
-# Cache bust: 2026-02-08-v60-lock-cleanup
+# OpenClaw Startup Script v61 - Kill stale processes on startup
+# Cache bust: 2026-02-08-v61-process-guard
 
 set -e
 trap 'echo "[ERROR] Script failed at line $LINENO: $BASH_COMMAND" >&2' ERR
+
+# Kill any other start-moltbot.sh processes (prevents duplicate instances)
+MY_PID=$$
+for pid in $(pgrep -f "start-moltbot.sh" 2>/dev/null || true); do
+  if [ "$pid" != "$MY_PID" ] && [ "$pid" != "1" ]; then
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+done
+# Also stop any lingering gateway
+openclaw gateway stop 2>/dev/null || true
+killall -9 openclaw-gateway 2>/dev/null || true
 
 # Timing utilities
 START_TIME=$(date +%s)
@@ -14,7 +25,7 @@ log_timing() {
 }
 
 echo "============================================"
-echo "Starting OpenClaw v50 (optimized)"
+echo "Starting OpenClaw v61 (process guard)"
 echo "============================================"
 
 CONFIG_DIR="/root/.openclaw"
