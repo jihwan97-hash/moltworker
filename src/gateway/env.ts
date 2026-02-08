@@ -56,6 +56,7 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (env.CDP_SECRET) envVars.CDP_SECRET = env.CDP_SECRET;
   if (env.WORKER_URL) envVars.WORKER_URL = env.WORKER_URL;
   if (env.BRAVE_API_KEY) envVars.BRAVE_API_KEY = env.BRAVE_API_KEY;
+  if (env.SERPER_API_KEY) envVars.SERPER_API_KEY = env.SERPER_API_KEY;
 
   // Claude Max OAuth token - map to both CLAUDE_ACCESS_TOKEN and ANTHROPIC_API_KEY
   if (env.CLAUDE_ACCESS_TOKEN) {

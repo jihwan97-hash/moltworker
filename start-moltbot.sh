@@ -1,6 +1,6 @@
 #!/bin/bash
-# OpenClaw Startup Script v58 - Fix model config after doctor
-# Cache bust: 2026-02-07-v58-model-fix
+# OpenClaw Startup Script v59 - Add autonomous web research
+# Cache bust: 2026-02-08-v59-web-researcher
 
 set -e
 trap 'echo "[ERROR] Script failed at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -176,14 +176,26 @@ log_timing "Starting gateway"
 
 # Restore cron jobs after gateway is ready (runs in background)
 CRON_SCRIPT="/root/clawd/clawd-memory/scripts/restore-crons.js"
-if [ -f "$CRON_SCRIPT" ]; then
+STUDY_SCRIPT="/root/clawd/skills/web-researcher/scripts/study-session.js"
+if [ -f "$CRON_SCRIPT" ] || [ -n "$SERPER_API_KEY" ]; then
   (
     # Wait for gateway to be ready
     for i in $(seq 1 30); do
       sleep 2
       if nc -z 127.0.0.1 18789 2>/dev/null; then
-        echo "[CRON] Gateway ready, restoring cron jobs..."
-        node "$CRON_SCRIPT" 2>&1 || echo "[WARN] Cron restore failed"
+        # Restore existing cron jobs
+        if [ -f "$CRON_SCRIPT" ]; then
+          echo "[CRON] Gateway ready, restoring cron jobs..."
+          node "$CRON_SCRIPT" 2>&1 || echo "[WARN] Cron restore failed"
+        fi
+
+        # Register autonomous study cron (every 6 hours) if Serper API is available
+        if [ -n "$SERPER_API_KEY" ] && [ -f "$STUDY_SCRIPT" ]; then
+          echo "[STUDY] Registering autonomous study cron job..."
+          openclaw cron add "auto-study" "0 */6 * * *" "node $STUDY_SCRIPT" 2>/dev/null \
+            || echo "[WARN] Study cron registration failed (may already exist)"
+          echo "[STUDY] Study cron registered (every 6 hours)"
+        fi
         break
       fi
     done

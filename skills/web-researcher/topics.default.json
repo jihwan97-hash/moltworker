@@ -1,0 +1,32 @@
+{
+  "topics": [
+    {
+      "name": "crypto-market",
+      "queries": [
+        "cryptocurrency market news today",
+        "bitcoin ethereum price analysis"
+      ]
+    },
+    {
+      "name": "ai-news",
+      "queries": [
+        "AI artificial intelligence latest developments",
+        "Claude Anthropic OpenAI updates"
+      ]
+    },
+    {
+      "name": "tech-trends",
+      "queries": [
+        "technology trends 2026",
+        "software engineering news"
+      ]
+    },
+    {
+      "name": "korea-tech",
+      "queries": [
+        "한국 IT 기술 뉴스",
+        "Korea startup tech news"
+      ]
+    }
+  ]
+}
