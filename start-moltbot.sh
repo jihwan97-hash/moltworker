@@ -1,6 +1,6 @@
 #!/bin/bash
-# OpenClaw Startup Script v59 - Add autonomous web research
-# Cache bust: 2026-02-08-v59-web-researcher
+# OpenClaw Startup Script v60 - Clear stale locks before gateway start
+# Cache bust: 2026-02-08-v60-lock-cleanup
 
 set -e
 trap 'echo "[ERROR] Script failed at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -171,6 +171,10 @@ echo "Background sync started (PID: $SYNC_PID)"
 
 # Trap to sync on exit
 trap 'echo "Shutting down, syncing to R2..."; sync_to_r2; kill $SYNC_PID 2>/dev/null' EXIT INT TERM
+
+# Clean up stale session lock files from previous gateway runs
+find /root/.openclaw -name "*.lock" -delete 2>/dev/null || true
+echo "Stale lock files cleaned"
 
 log_timing "Starting gateway"
 
